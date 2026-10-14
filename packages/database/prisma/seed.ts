@@ -3,6 +3,21 @@ import { PrismaClient, PlanInterval } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main(): Promise<void> {
+  const ownerRole = await prisma.role.findFirst({ where: { tenantId: null, code: 'OWNER' } });
+  const role = ownerRole ?? await prisma.role.create({
+    data: { name: 'Condominium owner', code: 'OWNER', isSystem: true },
+  });
+  const permission = await prisma.permission.upsert({
+    where: { code: 'tenant.manage' },
+    update: {},
+    create: { code: 'tenant.manage', description: 'Manage the condominium tenant' },
+  });
+  await prisma.rolePermission.upsert({
+    where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } },
+    update: {},
+    create: { roleId: role.id, permissionId: permission.id },
+  });
+
   await prisma.plan.upsert({
     where: { code: 'free' },
     update: {},
