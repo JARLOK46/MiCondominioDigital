@@ -33,7 +33,7 @@ export class EntitlementsService {
 
   private freeResult(subscription: SubscriptionRecord | null): EntitlementResult {
     return {
-      mode: 'FREE', canWrite: false, reason: 'NO_SUBSCRIPTION', plan: null,
+      mode: 'FREE', canWrite: true, reason: 'NO_SUBSCRIPTION', plan: null,
       subscription, features: {}, limits: {},
     };
   }
