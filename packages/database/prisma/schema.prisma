@@ -1,0 +1,297 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+enum PlanInterval {
+  MONTHLY
+  YEARLY
+}
+
+model User {
+  id                String             @id @default(uuid()) @db.Uuid
+  email             String             @unique
+  passwordHash      String             @map("password_hash")
+  firstName         String             @map("first_name")
+  lastName          String             @map("last_name")
+  phone             String?
+  status            UserStatus         @default(PENDING)
+  emailVerifiedAt   DateTime?          @map("email_verified_at")
+  lastLoginAt       DateTime?          @map("last_login_at")
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+  memberships       Membership[]
+  refreshTokens     RefreshToken[]
+  emailTokens       EmailVerificationToken[]
+  passwordTokens    PasswordResetToken[]
+  desktopSessions   DesktopSession[]
+  auditLogs         AuditLog[]
+
+  @@map("users")
+}
+
+model Tenant {
+  id                    String             @id @default(uuid()) @db.Uuid
+  name                  String
+  legalName             String?            @map("legal_name")
+  taxId                 String?            @map("tax_id")
+  countryCode           String             @default("CO") @map("country_code") @db.Char(2)
+  timezone              String             @default("America/Bogota")
+  address               String?
+  status                TenantStatus      @default(TRIAL)
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+  memberships           Membership[]
+  roles                 Role[]
+  subscriptions         Subscription[]
+  usage                 TenantUsage[]
+  desktopSessions       DesktopSession[]
+  auditLogs             AuditLog[]
+
+  @@map("tenants")
+}
+
+model Role {
+  id            String           @id @default(uuid()) @db.Uuid
+  tenantId      String?          @map("tenant_id") @db.Uuid
+  name          String
+  code          String
+  isSystem      Boolean          @default(false) @map("is_system")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  tenant        Tenant?          @relation(fields: [tenantId], references: [id])
+  memberships   Membership[]
+  permissions   RolePermission[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique
+  description String
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model Membership {
+  id        String           @id @default(uuid()) @db.Uuid
+  tenantId  String           @map("tenant_id") @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  roleId    String           @map("role_id") @db.Uuid
+  status    MembershipStatus @default(INVITED)
+  joinedAt  DateTime?        @map("joined_at")
+  createdAt DateTime         @default(now()) @map("created_at")
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role             @relation(fields: [roleId], references: [id])
+
+  @@unique([tenantId, userId])
+  @@index([userId, status])
+  @@map("memberships")
+}
+
+model Plan {
+  id               String          @id @default(uuid()) @db.Uuid
+  code             String          @unique
+  name             String
+  description      String
+  priceAmount      Int             @map("price_amount")
+  currency         String          @default("COP") @db.Char(3)
+  billingInterval  PlanInterval    @map("billing_interval")
+  maxResidences    Int?            @map("max_residences")
+  maxUsers         Int?            @map("max_users")
+  maxStorageBytes  BigInt?         @map("max_storage_bytes")
+  features         Json
+  isPublic         Boolean         @default(true) @map("is_public")
+  isActive         Boolean         @default(true) @map("is_active")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  subscriptions    Subscription[]
+  limits           PlanLimit[]
+
+  @@map("plans")
+}
+
+model PlanLimit {
+  id          String   @id @default(uuid()) @db.Uuid
+  planId      String   @map("plan_id") @db.Uuid
+  featureCode String   @map("feature_code")
+  limitType   String   @map("limit_type")
+  limitValue  Int?     @map("limit_value")
+  plan        Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureCode])
+  @@map("plan_limits")
+}
+
+model Subscription {
+  id                       String             @id @default(uuid()) @db.Uuid
+  tenantId                 String             @map("tenant_id") @db.Uuid
+  planId                   String             @map("plan_id") @db.Uuid
+  provider                 String?
+  providerSubscriptionId   String?            @map("provider_subscription_id")
+  status                   SubscriptionStatus @default(TRIALING)
+  currentPeriodStart      DateTime           @map("current_period_start")
+  currentPeriodEnd        DateTime           @map("current_period_end")
+  cancelAtPeriodEnd        Boolean            @default(false) @map("cancel_at_period_end")
+  createdAt                DateTime           @default(now()) @map("created_at")
+  updatedAt                DateTime           @updatedAt @map("updated_at")
+  tenant                   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan                     Plan               @relation(fields: [planId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([currentPeriodEnd])
+  @@map("subscriptions")
+}
+
+model PaymentEvent {
+  id               String    @id @default(uuid()) @db.Uuid
+  provider         String
+  providerEventId  String    @map("provider_event_id")
+  eventType        String    @map("event_type")
+  payload          Json
+  processedAt      DateTime? @map("processed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@unique([provider, providerEventId])
+  @@map("payment_events")
+}
+
+model TenantUsage {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  metricCode  String   @map("metric_code")
+  periodStart DateTime @map("period_start")
+  periodEnd   DateTime @map("period_end")
+  usageValue  Int      @default(0) @map("usage_value")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, metricCode, periodStart])
+  @@map("tenant_usage")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@map("password_reset_tokens")
+}
+
+model DesktopSession {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  deviceName   String?   @map("device_name")
+  platform     String?
+  appVersion   String?   @map("app_version")
+  lastSeenAt   DateTime  @default(now()) @map("last_seen_at")
+  revokedAt    DateTime? @map("revoked_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@map("desktop_sessions")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String?  @map("tenant_id") @db.Uuid
+  actorUserId  String?  @map("actor_user_id") @db.Uuid
+  actorType    String   @map("actor_type")
+  action       String
+  entityType   String   @map("entity_type")
+  entityId     String?  @map("entity_id") @db.Uuid
+  beforeData   Json?    @map("before_data")
+  afterData    Json?    @map("after_data")
+  metadata     Json?
+  ipAddress    String?  @map("ip_address")
+  createdAt    DateTime @default(now()) @map("created_at")
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
+  actorUser    User?    @relation(fields: [actorUserId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@map("audit_logs")
+}
