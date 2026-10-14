@@ -27,12 +27,9 @@ export class EntitlementsService {
     // A configured zero-price plan is still the free mode. Any failed, cancelled,
     // or out-of-period paid subscription is read-only, never client-authorized.
     if (plan.priceAmount === 0 && PAID_STATUSES.has(subscription.status) && inPeriod) {
-      return this.result('FREE', false, 'ACTIVE_SUBSCRIPTION', plan, subscription);
+      return this.result('FREE', true, 'ACTIVE_SUBSCRIPTION', plan, subscription);
     }
-    if (FAILED_STATUSES.has(subscription.status) || !inPeriod || plan.priceAmount > 0) {
-      return this.result('READ_ONLY', false, 'EXPIRED_OR_FAILED_PAYMENT', plan, subscription);
-    }
-    return this.freeResult(subscription);
+    return this.result('READ_ONLY', false, 'EXPIRED_OR_FAILED_PAYMENT', plan, subscription);
   }
 
   private freeResult(subscription: SubscriptionRecord | null, plan: PlanRecord | null): EntitlementResult {

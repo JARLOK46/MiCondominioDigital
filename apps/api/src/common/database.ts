@@ -7,15 +7,29 @@ export interface DatabaseClient {
     create(args: unknown): Promise<any>;
     update(args: unknown): Promise<any>;
   };
+  tenant: { create(args: unknown): Promise<any> };
+  role: { findFirst(args: unknown): Promise<any> };
   membership: {
     findFirst(args: unknown): Promise<any>;
     findMany(args: unknown): Promise<any[]>;
+    create(args: unknown): Promise<any>;
   };
   refreshToken: {
     create(args: unknown): Promise<any>;
     findFirst(args: unknown): Promise<any>;
     update(args: unknown): Promise<any>;
   };
+  emailVerificationToken: {
+    create(args: unknown): Promise<any>;
+    findFirst(args: unknown): Promise<any>;
+    update(args: unknown): Promise<any>;
+  };
+  passwordResetToken: {
+    create(args: unknown): Promise<any>;
+    findFirst(args: unknown): Promise<any>;
+    update(args: unknown): Promise<any>;
+  };
+  $transaction?: <T>(operation: (client: DatabaseClient) => Promise<T>) => Promise<T>;
 }
 
 export const DATABASE = Symbol('DATABASE');

@@ -46,6 +46,18 @@ describe('EntitlementsService', () => {
     expect(subscriptions.findCurrentForTenant).toHaveBeenCalledWith('tenant-1');
   });
 
+  it('keeps an active free subscription in limited write mode', async () => {
+    const subscriptions = { findCurrentForTenant: vi.fn().mockResolvedValue(subscription('ACTIVE')) } as unknown as SubscriptionsService;
+    const plans = { getFreePlan: vi.fn() } as unknown as PlansService;
+    const service = new EntitlementsService(subscriptions, plans);
+
+    await expect(service.evaluate('tenant-1', new Date('2026-01-15T00:00:00Z'))).resolves.toMatchObject({
+      mode: 'FREE',
+      canWrite: true,
+      reason: 'ACTIVE_SUBSCRIPTION',
+    });
+  });
+
   it('returns paid write access only for an active paid subscription in period', async () => {
     const subscriptions = { findCurrentForTenant: vi.fn().mockResolvedValue(subscription('ACTIVE', 10000)) } as unknown as SubscriptionsService;
     const plans = { getFreePlan: vi.fn() } as unknown as PlansService;

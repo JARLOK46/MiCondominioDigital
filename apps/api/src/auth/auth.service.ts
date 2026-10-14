@@ -1,20 +1,82 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { createHmac, randomBytes, scrypt as nodeScrypt, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
+import { Inject, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import * as bcrypt from 'bcrypt';
 import { DatabaseClient, OptionalDatabase } from '../common/database';
 import { AuthClaims } from './auth.types';
 import { MembershipService } from '../tenants/membership.service';
+import { TOKEN_DELIVERY, TokenDelivery } from './token-delivery';
 
-const scrypt = promisify(nodeScrypt);
 const ACCESS_TTL_SECONDS = 15 * 60;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
+const RECOVERY_RESPONSE = { message: 'If an account matches, instructions have been sent.' };
 
 @Injectable()
 export class AuthService {
   constructor(
     @OptionalDatabase() private readonly db?: DatabaseClient,
     private readonly memberships?: MembershipService,
+    @Optional() @Inject(TOKEN_DELIVERY) private readonly tokenDelivery?: TokenDelivery,
   ) {}
+
+  async register(input: { email: string; password: string; firstName: string; lastName: string; tenantName: string }): Promise<{ userId: string; message: string }> {
+    if (!this.db) throw new Error('Database provider is not configured');
+    if (!this.tokenDelivery) throw new Error('Token delivery provider is not configured');
+    const email = input.email.trim().toLowerCase();
+    const existing = await this.db.user.findUnique({ where: { email } });
+    if (existing) throw new UnauthorizedException('Unable to create account');
+    const passwordHash = await hashPassword(input.password);
+    const create = async (db: DatabaseClient) => {
+      const tenant = await db.tenant.create({ data: { name: input.tenantName.trim() } });
+      const user = await db.user.create({ data: { email, passwordHash, firstName: input.firstName.trim(), lastName: input.lastName.trim(), status: 'PENDING' } });
+      // System roles are tenant-independent. The OWNER code is the seeded role;
+      // tenantId: null prevents accidentally assigning another tenant's custom role.
+      const role = await db.role.findFirst({ where: { tenantId: null, code: 'OWNER', isSystem: true } });
+      if (!role) throw new Error('Owner role is not configured');
+      await db.membership.create({ data: { tenantId: tenant.id, userId: user.id, roleId: role.id, status: 'ACTIVE', joinedAt: new Date() } });
+      const rawToken = randomBytes(32).toString('base64url');
+      const expiresAt = new Date(Date.now() + VERIFICATION_TTL_MS);
+      await db.emailVerificationToken.create({ data: { userId: user.id, tokenHash: hashToken(rawToken), expiresAt } });
+      return { user, rawToken, expiresAt };
+    };
+    const result = this.db.$transaction ? await this.db.$transaction(create) : await create(this.db);
+    if (!this.tokenDelivery) throw new Error('Token delivery provider is not configured');
+    await this.tokenDelivery.sendEmailVerification({ email, token: result.rawToken, expiresAt: result.expiresAt });
+    return { userId: result.user.id, message: 'Account created. Check your email to verify your account.' };
+  }
+
+  async verifyEmail(rawToken: string): Promise<{ message: string }> {
+    if (!this.db) throw new Error('Database provider is not configured');
+    const token = await this.db.emailVerificationToken.findFirst({ where: { tokenHash: hashToken(rawToken), usedAt: null }, include: { user: true } });
+    if (!token || new Date(token.expiresAt) <= new Date()) throw new UnauthorizedException('Invalid or expired verification token');
+    await this.db.emailVerificationToken.update({ where: { id: token.id }, data: { usedAt: new Date() } });
+    await this.db.user.update({ where: { id: token.userId }, data: { status: 'ACTIVE', emailVerifiedAt: new Date() } });
+    return { message: 'Email verified successfully.' };
+  }
+
+  async forgotPassword(email: string): Promise<{ message: string }> {
+    if (!this.db) throw new Error('Database provider is not configured');
+    const user = await this.db.user.findUnique({ where: { email: email.trim().toLowerCase() } });
+    if (user && user.status !== 'DELETED') {
+      const rawToken = randomBytes(32).toString('base64url');
+      const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+      await this.db.passwordResetToken.create({ data: { userId: user.id, tokenHash: hashToken(rawToken), expiresAt } });
+      // Raw token crosses only the delivery boundary; it is never returned by the API.
+      if (this.tokenDelivery) await this.tokenDelivery.sendPasswordReset({ email: user.email, token: rawToken, expiresAt });
+    }
+    return RECOVERY_RESPONSE;
+  }
+
+  async resetPassword(rawToken: string, password: string): Promise<{ message: string }> {
+    if (!this.db) throw new Error('Database provider is not configured');
+    const token = await this.db.passwordResetToken.findFirst({ where: { tokenHash: hashToken(rawToken), usedAt: null }, include: { user: true } });
+    if (!token || new Date(token.expiresAt) <= new Date() || token.user.status === 'DELETED') throw new UnauthorizedException('Invalid or expired password reset token');
+    const passwordHash = await hashPassword(password);
+    await this.db.user.update({ where: { id: token.userId }, data: { passwordHash } });
+    await this.db.passwordResetToken.update({ where: { id: token.id }, data: { usedAt: new Date() } });
+    return { message: 'Password reset successfully.' };
+  }
 
   async login(email: string, password: string, tenantId?: string): Promise<{ accessToken: string; refreshToken: string }> {
     if (!this.db) throw new Error('Database provider is not configured');
@@ -63,8 +125,22 @@ export class AuthService {
   }
 }
 
-function sign(value: string): string { return createHmac('sha256', process.env.JWT_SECRET ?? 'development-only-secret').update(value).digest('base64url'); }
-function hashToken(value: string): string { return createHmac('sha256', process.env.REFRESH_TOKEN_SECRET ?? process.env.JWT_SECRET ?? 'development-only-secret').update(value).digest('hex'); }
+function configuredSecret(name: 'JWT_ACCESS_SECRET' | 'JWT_REFRESH_SECRET'): string {
+  const value = process.env[name];
+  if (value) return value;
+  if (process.env.NODE_ENV === 'production') throw new Error(`${name} is required in production`);
+  return `development-only-${name.toLowerCase()}`;
+}
+function sign(value: string): string { return createHmac('sha256', configuredSecret('JWT_ACCESS_SECRET')).update(value).digest('base64url'); }
+function hashToken(value: string): string { return createHmac('sha256', configuredSecret('JWT_REFRESH_SECRET')).update(value).digest('hex'); }
 function safeEqual(a: string, b: string): boolean { const left = Buffer.from(a); const right = Buffer.from(b); return left.length === right.length && timingSafeEqual(left, right); }
-export async function hashPassword(password: string): Promise<string> { const salt = randomBytes(16).toString('hex'); const key = (await scrypt(password, salt, 64)) as Buffer; return `scrypt:${salt}:${key.toString('hex')}`; }
-async function verifyPassword(password: string, encoded: string): Promise<boolean> { const [, salt, expected] = encoded.split(':'); if (!salt || !expected) return false; const key = (await scrypt(password, salt, 64)) as Buffer; return safeEqual(key.toString('hex'), expected); }
+const BCRYPT_COST = 12;
+
+export function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, BCRYPT_COST);
+}
+
+async function verifyPassword(password: string, encoded: string): Promise<boolean> {
+  if (!encoded.startsWith('$2')) return false;
+  return bcrypt.compare(password, encoded);
+}
