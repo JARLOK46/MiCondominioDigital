@@ -22,6 +22,14 @@ export class PlansService {
     });
   }
 
+  async getFreePlan(): Promise<PlanRecord | null> {
+    const plan = await this.db.plan.findUnique({
+      where: { code: 'free' },
+      include: { limits: true },
+    });
+    return plan && plan.isActive ? plan : null;
+  }
+
   async getActiveByCode(code: string): Promise<PlanRecord> {
     const plan = await this.db.plan.findUnique({
       where: { code },

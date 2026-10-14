@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EntitlementsService } from './entitlements.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { PlansService } from '../plans/plans.service';
 
 const plan = {
   id: 'plan-free',
@@ -34,7 +35,8 @@ function subscription(status: string, priceAmount = 0) {
 describe('EntitlementsService', () => {
   it('returns a limited free mode when there is no subscription', async () => {
     const subscriptions = { findCurrentForTenant: vi.fn().mockResolvedValue(null) } as unknown as SubscriptionsService;
-    const service = new EntitlementsService(subscriptions);
+    const plans = { getFreePlan: vi.fn().mockResolvedValue(plan) } as unknown as PlansService;
+    const service = new EntitlementsService(subscriptions, plans);
 
     await expect(service.evaluate('tenant-1')).resolves.toMatchObject({
       mode: 'FREE',
@@ -46,7 +48,8 @@ describe('EntitlementsService', () => {
 
   it('returns paid write access only for an active paid subscription in period', async () => {
     const subscriptions = { findCurrentForTenant: vi.fn().mockResolvedValue(subscription('ACTIVE', 10000)) } as unknown as SubscriptionsService;
-    const service = new EntitlementsService(subscriptions);
+    const plans = { getFreePlan: vi.fn() } as unknown as PlansService;
+    const service = new EntitlementsService(subscriptions, plans);
 
     await expect(service.evaluate('tenant-1', new Date('2026-01-15T00:00:00Z'))).resolves.toMatchObject({
       mode: 'PAID',
@@ -56,7 +59,8 @@ describe('EntitlementsService', () => {
 
   it('returns read-only access after a paid subscription expires', async () => {
     const subscriptions = { findCurrentForTenant: vi.fn().mockResolvedValue(subscription('EXPIRED', 10000)) } as unknown as SubscriptionsService;
-    const service = new EntitlementsService(subscriptions);
+    const plans = { getFreePlan: vi.fn() } as unknown as PlansService;
+    const service = new EntitlementsService(subscriptions, plans);
 
     await expect(service.evaluate('tenant-1', new Date('2026-02-02T00:00:00Z'))).resolves.toMatchObject({
       mode: 'READ_ONLY',
